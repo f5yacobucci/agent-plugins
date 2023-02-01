@@ -16,13 +16,23 @@ import (
 var (
 	name    = ""
 	version = ""
+
+	state *fastjson.Value
 )
 
-func init_(_ []byte) ([]byte, error) {
+func init_(payload []byte) ([]byte, error) {
 	helpers.IncrNumberKey(helpers.InvocationsInitTimes)
 
 	wapc.ConsoleLog("init_ guest: entry")
 	wapc.ConsoleLog(fmt.Sprintf("init_ guest invoked: %v", helpers.GetNumberKey(helpers.InvocationsInitTimes)))
+
+	var p fastjson.Parser
+	var err error
+	state, err = p.ParseBytes(payload)
+	if err != nil {
+		return nil, err
+	}
+	wapc.ConsoleLog(fmt.Sprintf("init_ guest payload: %v", state))
 
 	wapc.ConsoleLog("init_ guest: exit")
 	return nil, nil
@@ -45,14 +55,10 @@ func process_(input []byte) ([]byte, error) {
 
 	wapc.ConsoleLog("process_ guest: entry")
 	wapc.ConsoleLog(fmt.Sprintf("process_ guest invoked: %v", helpers.GetNumberKey(helpers.InvocationsProcessTimes)))
+	wapc.ConsoleLog(fmt.Sprintf("process_ guest state: %v", state))
 
-	/*
-	   name, ok := pdk.GetConfig(helpers.PluginName)
-	   if !ok {
-	     helpers.LogString(pdk.LogDebug, "process_ guest: cannot get self name")
-	     name = "unknown"
-	   }
-	*/
+	binding := string(state.GetStringBytes(helpers.PluginName))
+	wapc.ConsoleLog(fmt.Sprintf("process_ guest binding: %s", binding))
 
 	var p fastjson.Parser
 	v, err := p.ParseBytes(input)
@@ -72,13 +78,13 @@ func process_(input []byte) ([]byte, error) {
 		msg.Write([]byte(`{"topic":"`))
 		msg.Write([]byte(helpers.Pong))
 		msg.Write([]byte(`","data":""}`))
-		wapc.HostCall("ponger", "messagebus", "process__", msg.Bytes())
+		wapc.HostCall(binding, "messagebus", "process__", msg.Bytes())
 
 		helpers.IncrNumberKey(helpers.PongsSent)
 		wapc.ConsoleLog("process_ guest: host side process__ success")
 	}
 
-	b := helpers.BuildReturn(name, topic, false, helpers.PingsRecv, helpers.PongsSent)
+	b := helpers.BuildReturn(binding, topic, false, helpers.PingsRecv, helpers.PongsSent)
 
 	wapc.ConsoleLog("process_ guest: exit")
 	return b.Bytes(), nil

@@ -3,7 +3,7 @@ package main
 import (
 	"bytes"
 	"fmt"
-	"os"
+	"strconv"
 
 	"github.com/f5yacobucci/agent-plugins/internal/helpers"
 
@@ -22,20 +22,28 @@ import (
 // func(uint64, uint64, uint64, uint64) int32 -> just return a single integer
 
 // Plugin logic below
+
 var (
 	name    = ""
 	version = ""
+
+	state *fastjson.Value
 )
 
-func init_(_ []byte) ([]byte, error) {
+func init_(payload []byte) ([]byte, error) {
 	// DEBUG Metrics
 	helpers.IncrNumberKey(helpers.InvocationsInitTimes)
-
-	_, _ = os.LookupEnv("HOME")
 
 	wapc.ConsoleLog("init_ guest: entry")
 	wapc.ConsoleLog(fmt.Sprintf("init_ guest invoked: %v", helpers.GetNumberKey(helpers.InvocationsInitTimes)))
 
+	var p fastjson.Parser
+	var err error
+	state, err = p.ParseBytes(payload)
+	if err != nil {
+		return nil, err
+	}
+	wapc.ConsoleLog(fmt.Sprintf("init_ guest payload: %v", state))
 	wapc.ConsoleLog("init_ guest: exit")
 	return nil, nil
 }
@@ -56,14 +64,10 @@ func process_(input []byte) ([]byte, error) {
 
 	wapc.ConsoleLog("process_ guest: entry")
 	wapc.ConsoleLog(fmt.Sprintf("process_ guest invoked: %v", helpers.GetNumberKey(helpers.InvocationsProcessTimes)))
+	wapc.ConsoleLog(fmt.Sprintf("process_ guest state: %v", state))
 
-	/*
-		name, ok := pdk.GetConfig(helpers.PluginName)
-		if !ok {
-			helpers.LogString(pdk.LogDebug, "process_ guest: cannot get self name")
-			name = "unknown"
-		}
-	*/
+	binding := string(state.GetStringBytes(helpers.PluginName))
+	wapc.ConsoleLog(fmt.Sprintf("process_ guest binding: %s", binding))
 
 	var p fastjson.Parser
 	v, err := p.ParseBytes(input)
@@ -80,18 +84,16 @@ func process_(input []byte) ([]byte, error) {
 		wapc.ConsoleLog("process_ guest: received pong event")
 		helpers.IncrNumberKey(helpers.PongsRecv)
 
-		/*
-			limit, ok := pdk.GetConfig(helpers.Limit)
-			if !ok {
-				helpers.LogString(pdk.LogDebug, "process_ guest: cannot determine limit, stopping")
-				return 0
-			}
-		*/
-		var limit uint64 = 10 // this should be set from config
+		limitBytes := state.GetStringBytes(helpers.Limit)
+		limit, err := strconv.ParseInt(string(limitBytes), 10, 64)
+		if err != nil {
+			wapc.ConsoleLog(fmt.Sprintf("process_ guest: limit key invalid: %s", err))
+			limit = 10
+		}
 
-		if helpers.GetNumberKey(helpers.PongsRecv) == limit {
+		if helpers.GetNumberKey(helpers.PongsRecv) == uint64(limit) {
 			wapc.ConsoleLog("process_ guest: limit reached")
-			b := helpers.BuildReturn(name, topic, false, helpers.PingsSent, helpers.PongsRecv)
+			b := helpers.BuildReturn(binding, topic, false, helpers.PingsSent, helpers.PongsRecv)
 			return b.Bytes(), nil
 		}
 	}
@@ -100,12 +102,12 @@ func process_(input []byte) ([]byte, error) {
 	msg.Write([]byte(`{"topic":"`))
 	msg.Write([]byte(helpers.Ping))
 	msg.Write([]byte(`","data":""}`))
-	wapc.HostCall("pinger", "messagebus", "process__", msg.Bytes())
+	wapc.HostCall(binding, "messagebus", "process__", msg.Bytes())
 
 	helpers.IncrNumberKey(helpers.PingsSent)
 	wapc.ConsoleLog("process_ guest: host side process__ success")
 
-	b := helpers.BuildReturn(name, topic, false, helpers.PingsSent, helpers.PongsRecv)
+	b := helpers.BuildReturn(binding, topic, false, helpers.PingsSent, helpers.PongsRecv)
 	wapc.ConsoleLog(fmt.Sprintf("process_ guest output: %v", b.String()))
 
 	wapc.ConsoleLog("process_ guest: exit")
