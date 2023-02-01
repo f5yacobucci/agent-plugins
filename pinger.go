@@ -1,23 +1,15 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
-	"strconv"
+	"os"
 
 	"github.com/f5yacobucci/agent-plugins/internal/helpers"
 
-	pdk "github.com/extism/go-pdk"
 	"github.com/valyala/fastjson"
+	wapc "github.com/wapc/wapc-guest-tinygo"
 )
-
-/*
-#include "runtime/extism-pdk.h"
-*/
-import "C"
-
-//go:wasm-module env
-//export process__
-func process__(uint64, uint64, uint64, uint64) uint64
 
 // with multi returns tinygo will encode return values into a pointer that's set during
 // a host side call, therefore, the expected multi return:
@@ -35,143 +27,97 @@ var (
 	version = ""
 )
 
-//export init_
-func init_() int32 {
+func init_(_ []byte) ([]byte, error) {
 	// DEBUG Metrics
-	err := helpers.IncrNumberKey(helpers.InvocationsInitTimes)
-	if err != nil {
-		helpers.SetError(err)
-		return -1
-	}
+	helpers.IncrNumberKey(helpers.InvocationsInitTimes)
 
-	// XXX figure out logging, try 0.2.0 release or git HEAD
-	// XXX add the plugin name to each log
-	helpers.LogString(pdk.LogDebug, "init_ guest: entry")
+	_, _ = os.LookupEnv("HOME")
 
-	helpers.LogString(pdk.LogDebug, "init_ guest: exit")
-	return 0
+	wapc.ConsoleLog("init_ guest: entry")
+	wapc.ConsoleLog(fmt.Sprintf("init_ guest invoked: %v", helpers.GetNumberKey(helpers.InvocationsInitTimes)))
+
+	wapc.ConsoleLog("init_ guest: exit")
+	return nil, nil
 }
 
-//export close_
-func close_() int32 {
+func close_(_ []byte) ([]byte, error) {
 	// DEBUG Metrics
-	err := helpers.IncrNumberKey(helpers.InvocationsCloseTimes)
-	if err != nil {
-		helpers.SetError(err)
-		return -1
-	}
+	helpers.IncrNumberKey(helpers.InvocationsCloseTimes)
 
-	helpers.LogString(pdk.LogDebug, "close_ guest: entry")
+	wapc.ConsoleLog("close_ guest: entry")
+	wapc.ConsoleLog(fmt.Sprintf("close_ guest invoked: %v", helpers.GetNumberKey(helpers.InvocationsCloseTimes)))
 
-	helpers.LogString(pdk.LogDebug, "close_ guest: exit")
-	return 0
+	wapc.ConsoleLog("close_ guest: exit")
+	return nil, nil
 }
 
-//export process_
-func process_() int32 {
-	// DEBUG Metrics
-	err := helpers.IncrNumberKey(helpers.InvocationsProcessTimes)
-	if err != nil {
-		helpers.SetError(err)
-		return -1
-	}
+func process_(input []byte) ([]byte, error) {
+	helpers.IncrNumberKey(helpers.InvocationsProcessTimes)
 
-	helpers.LogString(pdk.LogDebug, "process_ guest: entry")
+	wapc.ConsoleLog("process_ guest: entry")
+	wapc.ConsoleLog(fmt.Sprintf("process_ guest invoked: %v", helpers.GetNumberKey(helpers.InvocationsProcessTimes)))
 
-	name, ok := pdk.GetConfig(helpers.PluginName)
-	if !ok {
-		helpers.LogString(pdk.LogDebug, "process_ guest: cannot get self name")
-		name = "unknown"
-	}
-
-	input := pdk.Input()
+	/*
+		name, ok := pdk.GetConfig(helpers.PluginName)
+		if !ok {
+			helpers.LogString(pdk.LogDebug, "process_ guest: cannot get self name")
+			name = "unknown"
+		}
+	*/
 
 	var p fastjson.Parser
 	v, err := p.ParseBytes(input)
 	if err != nil {
-		helpers.SetError(err)
-		return -1
+		return nil, err
 	}
 
 	topic := v.GetStringBytes("topic")
 	if topic == nil {
-		helpers.SetErrorString("process_ guest: cannot determine the event topic")
-		return -1
+		return nil, err
 	}
 
 	if string(topic) == helpers.Pong {
+		wapc.ConsoleLog("process_ guest: received pong event")
 		helpers.IncrNumberKey(helpers.PongsRecv)
-		if err != nil {
-			helpers.LogString(pdk.LogDebug, "process_ guest: failed incrementing pongs")
-		}
 
-		limit, ok := pdk.GetConfig(helpers.Limit)
-		if !ok {
-			helpers.LogString(pdk.LogDebug, "process_ guest: cannot determine limit, stopping")
-			return 0
-		}
+		/*
+			limit, ok := pdk.GetConfig(helpers.Limit)
+			if !ok {
+				helpers.LogString(pdk.LogDebug, "process_ guest: cannot determine limit, stopping")
+				return 0
+			}
+		*/
+		var limit uint64 = 10 // this should be set from config
 
-		n, err := strconv.ParseUint(limit, 10, 64)
-		if err != nil {
-			// call on_error?
-			helpers.LogString(pdk.LogDebug, "process_ guest: cannot parse limit config, stopping")
-			return 0
-		}
-
-		if helpers.GetKeyUint64(helpers.PongsRecv) == n {
-			helpers.LogString(pdk.LogDebug, "process_ geust: limit reached")
-			return 0
+		if helpers.GetNumberKey(helpers.PongsRecv) == limit {
+			wapc.ConsoleLog("process_ guest: limit reached")
+			b := helpers.BuildReturn(name, topic, false, helpers.PingsSent, helpers.PongsRecv)
+			return b.Bytes(), nil
 		}
 	}
 
-	ping := pdk.AllocateString(helpers.Ping)
-	defer ping.Free()
-	payload := pdk.AllocateString(name)
-	defer payload.Free()
+	var msg bytes.Buffer
+	msg.Write([]byte(`{"topic":"`))
+	msg.Write([]byte(helpers.Ping))
+	msg.Write([]byte(`","data":""}`))
+	wapc.HostCall("pinger", "messagebus", "process__", msg.Bytes())
 
-	ret := process__(
-		ping.Offset(),
-		ping.Length(),
-		payload.Offset(),
-		payload.Length(),
-	)
-	if ret > 0 {
-		mem := pdk.FindMemory(ret)
-		buf := make([]byte, mem.Length())
-		mem.Load(buf)
-		helpers.SetError(fmt.Errorf(
-			"process_ guest: host side process__ failed - rc: %d, msg: %s",
-			uint64(ret),
-			string(buf),
-		))
-		return -1
-	}
-
-	err = helpers.IncrNumberKey(helpers.PingsSent)
-	if err != nil {
-		helpers.LogString(pdk.LogDebug, "process_ guest: failed incrementing pings")
-	}
-	helpers.LogString(pdk.LogDebug, "process_ guest: host side process__ success")
+	helpers.IncrNumberKey(helpers.PingsSent)
+	wapc.ConsoleLog("process_ guest: host side process__ success")
 
 	b := helpers.BuildReturn(name, topic, false, helpers.PingsSent, helpers.PongsRecv)
-	mem := pdk.AllocateBytes(b.Bytes())
-	defer mem.Free()
-	pdk.OutputMemory(mem)
+	wapc.ConsoleLog(fmt.Sprintf("process_ guest output: %v", b.String()))
 
-	helpers.LogString(pdk.LogDebug, "process_ guest: exit")
-	return 0
+	wapc.ConsoleLog("process_ guest: exit")
+	return b.Bytes(), nil
 }
 
-//export info_
-func info_() int32 {
+func info_(_ []byte) ([]byte, error) {
 	// DEBUG Metrics
-	err := helpers.IncrNumberKey(helpers.InvocationsInfoTimes)
-	if err != nil {
-		helpers.SetError(err)
-		return -1
-	}
+	helpers.IncrNumberKey(helpers.InvocationsInfoTimes)
 
-	helpers.LogString(pdk.LogDebug, "info_ guest: entry")
+	wapc.ConsoleLog("info_ guest: entry")
+	wapc.ConsoleLog(fmt.Sprintf("info_ guest invoked: %v", helpers.GetNumberKey(helpers.InvocationsInfoTimes)))
 
 	arena := &fastjson.Arena{}
 	json := arena.NewObject()
@@ -181,32 +127,28 @@ func info_() int32 {
 	var b []byte
 	enc := json.MarshalTo(b)
 
-	mem := pdk.AllocateBytes(enc)
-	defer mem.Free()
-	pdk.OutputMemory(mem)
-
-	helpers.LogString(pdk.LogDebug, "info_ guest: exit")
-	return 0
+	wapc.ConsoleLog("info_ guest: exit")
+	return enc, nil
 }
 
-//export subscriptions_
-func subscriptions_() int32 {
+func subscriptions_(_ []byte) ([]byte, error) {
 	// DEBUG Metrics
-	err := helpers.IncrNumberKey(helpers.InvocationsSubsTimes)
-	if err != nil {
-		helpers.SetError(err)
-		return -1
-	}
+	helpers.IncrNumberKey(helpers.InvocationsSubsTimes)
 
-	helpers.LogString(pdk.LogDebug, "subscriptions_ guest: entry")
+	wapc.ConsoleLog("subscriptions_ guest: entry")
+	wapc.ConsoleLog(fmt.Sprintf("subscriptions_ guest invoked: %v", helpers.GetNumberKey(helpers.InvocationsSubsTimes)))
 
-	subs := pdk.AllocateString(helpers.Subscriptions)
-	defer subs.Free()
-	pdk.OutputMemory(subs)
-
-	helpers.LogString(pdk.LogDebug, "subscriptions_ guest: exit")
-	return 0
+	wapc.ConsoleLog("subscriptions_ guest: exit")
+	return []byte(helpers.Subscriptions), nil
 }
 
 // https://github.com/tinygo-org/tinygo/issues/2703
-func main() {}
+func main() {
+	wapc.RegisterFunctions(wapc.Functions{
+		"init_":          init_,
+		"close_":         close_,
+		"subscriptions_": subscriptions_,
+		"info_":          info_,
+		"process_":       process_,
+	})
+}

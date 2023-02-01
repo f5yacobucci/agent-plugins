@@ -2,16 +2,8 @@ package helpers
 
 import (
 	"bytes"
-	"encoding/binary"
 	"strconv"
-
-	pdk "github.com/extism/go-pdk"
 )
-
-/*
-#include "../../runtime/extism-pdk.h"
-*/
-import "C"
 
 const (
 	// topics - should pull these from agent, but CGO whines
@@ -37,63 +29,34 @@ const (
 	Limit      = "limit"
 )
 
-// Make these an import
-func SetError(err error) {
-	if err == nil {
+type metrics map[string]uint64
+
+var (
+	pluginMetrics metrics
+)
+
+func init() {
+	pluginMetrics = make(metrics)
+}
+
+func IncrNumberKey(key string) {
+	var v uint64
+	var ok bool
+	if v, ok = pluginMetrics[key]; !ok {
+		pluginMetrics[key] = 1
 		return
 	}
-
-	SetErrorString(err.Error())
-	return
+	v = v + 1
+	pluginMetrics[key] = v
 }
 
-func SetErrorString(err string) {
-	mem := pdk.AllocateString(err)
-	defer mem.Free()
-	C.extism_error_set(mem.Offset())
-}
-
-func IncrNumberKey(key string) error {
-	if key == "" {
-		return nil
-	}
-
-	val := pdk.GetVar(key)
-	if val == nil {
-		b := make([]byte, 8)
-		binary.LittleEndian.PutUint64(b, 1)
-		pdk.SetVar(key, b)
-
-		return nil
-	}
-
-	intVal := binary.LittleEndian.Uint64(val)
-	intVal = intVal + 1
-	b := make([]byte, 8)
-	binary.LittleEndian.PutUint64(b, intVal)
-	pdk.SetVar(key, b)
-
-	return nil
-}
-
-func GetKeyUint64(key string) uint64 {
-	if key == "" {
+func GetNumberKey(key string) uint64 {
+	var v uint64
+	var ok bool
+	if v, ok = pluginMetrics[key]; !ok {
 		return 0
 	}
-
-	val := pdk.GetVar(key)
-	if val == nil {
-		return 0
-	}
-
-	intVal := binary.LittleEndian.Uint64(val)
-	return intVal
-}
-
-func LogString(l pdk.LogLevel, s string) {
-	mem := pdk.AllocateString(s)
-	defer mem.Free()
-	pdk.LogMemory(l, mem)
+	return v
 }
 
 func BuildReturn(
@@ -107,23 +70,11 @@ func BuildReturn(
 	b.Write([]byte(`{"topic":"`))
 	b.Write(topic)
 	b.Write([]byte(`","pings":`))
-	incoming := pdk.GetVar(pingKey)
-	if incoming == nil {
-		LogString(pdk.LogDebug, "process_ guest: could not get pings recv")
-		b.Write([]byte(`0,"pongs":`))
-	} else {
-		v := binary.LittleEndian.Uint64(incoming)
-		b.Write([]byte(strconv.FormatUint(v, 10)))
-		b.Write([]byte(`,"pongs":`))
-	}
-	outgoing := pdk.GetVar(pongKey)
-	if outgoing == nil {
-		LogString(pdk.LogDebug, "process_ guest: could not get pongs sent")
-		b.Write([]byte(`0`))
-	} else {
-		v := binary.LittleEndian.Uint64(outgoing)
-		b.Write([]byte(strconv.FormatUint(v, 10)))
-	}
+	incoming := GetNumberKey(pingKey)
+	b.Write([]byte(strconv.FormatInt(int64(incoming), 10)))
+	b.Write([]byte(`,"pongs":`))
+	outgoing := GetNumberKey(pongKey)
+	b.Write([]byte(strconv.FormatInt(int64(outgoing), 10)))
 
 	b.Write([]byte(`,"plugin":"`))
 	b.Write([]byte(plugin))
